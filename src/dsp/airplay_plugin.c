@@ -44,7 +44,10 @@ typedef struct {
     uint8_t pending_len;
 
     float gain;
+    bool rec_source_mode;
+    float peak_level;
     bool receiving_audio;
+    bool paused;
     uint64_t last_audio_ms;
 } airplay_instance_t;
 
@@ -456,6 +459,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     airplay_instance_t *inst = (airplay_instance_t *)instance;
     if (!inst || !key || !val) return;
 
+    if (strcmp(key, "rec_source_mode") == 0) {
+        inst->rec_source_mode = (strcmp(val, "1") == 0);
+        return;
+    }
+
     if (strcmp(key, "gain") == 0) {
         float g = (float)atof(val);
         if (g < 0.0f) g = 0.0f;
@@ -476,6 +484,21 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         return;
     }
 
+    if (strcmp(key, "pause") == 0) {
+        inst->paused = true;
+        return;
+    }
+
+    if (strcmp(key, "resume") == 0) {
+        inst->paused = false;
+        return;
+    }
+
+    if (strcmp(key, "play_pause_toggle") == 0) {
+        inst->paused = !inst->paused;
+        return;
+    }
+
     if (strcmp(key, "restart") == 0) {
         ap_log("manual restart requested");
         clear_ring(inst);
@@ -489,6 +512,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     airplay_instance_t *inst = (airplay_instance_t *)instance;
     if (!key || !buf || buf_len <= 0) return -1;
+
+    if (strcmp(key, "audio_level") == 0) {
+        return snprintf(buf, (size_t)buf_len, "%.3f", inst ? inst->peak_level : 0.0f);
+    }
 
     if (strcmp(key, "gain") == 0) {
         return snprintf(buf, (size_t)buf_len, "%.2f", inst ? inst->gain : 1.0f);
@@ -509,6 +536,12 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (!inst->daemon_running) return snprintf(buf, (size_t)buf_len, "stopped");
         if (inst->receiving_audio) return snprintf(buf, (size_t)buf_len, "playing");
         return snprintf(buf, (size_t)buf_len, "waiting");
+    }
+
+    if (strcmp(key, "playback_active") == 0) {
+        if (!inst) return snprintf(buf, (size_t)buf_len, "0");
+        if (inst->receiving_audio) return snprintf(buf, (size_t)buf_len, "1");
+        return snprintf(buf, (size_t)buf_len, "0");
     }
 
     return -1;
@@ -542,6 +575,13 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     /* Pop audio from ring buffer */
     got = ring_pop(inst, out_interleaved_lr, needed);
 
+    /* If paused, silence the output (connection stays alive, FIFO is still
+     * drained above so shairport-sync doesn't block). */
+    if (inst->paused) {
+        memset(out_interleaved_lr, 0, needed * sizeof(int16_t));
+        got = 0;
+    }
+
     /* Apply gain */
     if (inst->gain != 1.0f && got > 0) {
         for (i = 0; i < got; i++) {
@@ -550,6 +590,16 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
             if (s < -32768.0f) s = -32768.0f;
             out_interleaved_lr[i] = (int16_t)s;
         }
+    }
+
+    /* Update peak level for rec source monitoring */
+    {
+        float peak = 0.0f;
+        for (i = 0; i < needed; i++) {
+            float s = (float)abs(out_interleaved_lr[i]) / 32768.0f;
+            if (s > peak) peak = s;
+        }
+        inst->peak_level = peak;
     }
 
     /* Prevent the host's idle gate from sleeping this slot while the daemon

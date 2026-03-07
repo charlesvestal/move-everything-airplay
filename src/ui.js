@@ -23,6 +23,8 @@ let tickCounter = 0;
 let spinnerTick = 0;
 let spinnerFrame = 0;
 let needsRedraw = true;
+var recSourceMode = false;
+var recFlashCounter = 0;
 
 function refreshState() {
   const prevStatus = status;
@@ -84,6 +86,27 @@ function currentFooter() {
   return statusLabel();
 }
 
+function drawRecSourceIndicator() {
+  if (!recSourceMode) return;
+  recFlashCounter++;
+
+  var levelStr = host_module_get_param('audio_level');
+  var level = levelStr ? parseFloat(levelStr) : 0;
+
+  var labelText = 'REC:[AP]';
+  var labelW = labelText.length * 6;
+  var meterX = 128 - labelW - 5;
+  var meterH = Math.round(level * 7);
+  if (meterH > 0) {
+    fill_rect(meterX, 2 + (7 - meterH), 2, meterH, 1);
+  }
+
+  var show = (recFlashCounter % 30) < 20;
+  if (show) {
+    print(128 - labelW, 2, labelText, 1);
+  }
+}
+
 globalThis.init = function () {
   status = 'stopped';
   deviceName = 'Move';
@@ -100,6 +123,11 @@ globalThis.init = function () {
 };
 
 globalThis.tick = function () {
+  if (!recSourceMode) {
+    var rsm = host_module_get_param('rec_source_mode');
+    if (rsm === '1') recSourceMode = true;
+  }
+
   tickCounter = (tickCounter + 1) % 6;
   if (tickCounter === 0) {
     refreshState();
@@ -127,6 +155,7 @@ globalThis.tick = function () {
       state: menuState,
       footer: currentFooter()
     });
+    drawRecSourceIndicator();
 
     needsRedraw = false;
   }
